@@ -128,11 +128,12 @@ MIN_APPEARANCES_FOR_REMOVAL = int(os.getenv("MIN_APPEARANCES_FOR_REMOVAL", "5"))
 LOG_FILE = "logs/monitor.log"
 CHECKPOINT_FILE = "data/checkpoints/last_signatures.json"
 
-# Polling interval (saniye) - Solana daha hızlı ama rate limit'e dikkat
-POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", "3"))
+# Polling interval (saniye)
+# Helius Free: 1M kredit/gün. 104 cüzdan × 20sn interval × 25 batch = ~970K/gün (güvenli)
+POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", "20"))
 
 # Batch size - Kaç cüzdanı paralel sorgula
-WALLET_BATCH_SIZE = int(os.getenv("WALLET_BATCH_SIZE", "10"))
+WALLET_BATCH_SIZE = int(os.getenv("WALLET_BATCH_SIZE", "25"))
 
 # Her cüzdan için son kaç tx kontrol edilsin
 TX_FETCH_LIMIT = int(os.getenv("TX_FETCH_LIMIT", "5"))

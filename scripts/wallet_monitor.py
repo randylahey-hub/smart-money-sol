@@ -100,6 +100,11 @@ class SolSmartMoneyMonitor:
             "start_time": time.time(),
         }
 
+        # Kredit takibi (Helius Free: 1M/gün)
+        self.daily_credit_estimate = 0
+        self.credit_reset_date = datetime.now(UTC_PLUS_3).strftime("%Y-%m-%d")
+        self.DAILY_CREDIT_LIMIT = 900_000  # 1M limitin %90'ı — güvenli sınır
+
     def _load_wallets(self, wallets_file: str) -> list:
         """Cüzdan listesini yükle."""
         try:
@@ -441,6 +446,7 @@ class SolSmartMoneyMonitor:
         print(f"🌙 Blackout: {sorted(BLACKOUT_HOURS)} → +{BLACKOUT_EXTRA_THRESHOLD}")
         print(f"⏰ Polling: {POLLING_INTERVAL}sn")
         print(f"📦 Batch: {WALLET_BATCH_SIZE} cüzdan/batch")
+        print(f"💳 Kredit limit: {self.DAILY_CREDIT_LIMIT:,}/gün (Helius Free: 1M)")
         print("=" * 60 + "\n")
 
         # SOL fiyatı al
@@ -477,11 +483,30 @@ class SolSmartMoneyMonitor:
                 cycle_start = time.time()
                 self.stats["cycles"] += 1
 
+                # Kredit günlük reset kontrolü
+                today = datetime.now(UTC_PLUS_3).strftime("%Y-%m-%d")
+                if today != self.credit_reset_date:
+                    print(f"🔄 Yeni gün — kredit sayacı sıfırlandı (dün: ~{self.daily_credit_estimate:,})")
+                    self.daily_credit_estimate = 0
+                    self.credit_reset_date = today
+
+                # Kredit limiti kontrolü
+                if self.daily_credit_estimate >= self.DAILY_CREDIT_LIMIT:
+                    print(f"⚠️ Günlük kredit limiti yaklaşıyor ({self.daily_credit_estimate:,}/{self.DAILY_CREDIT_LIMIT:,}) — 60s bekleniyor")
+                    await asyncio.sleep(60)
+                    continue
+
                 # Cüzdanları batch'lere böl
                 wallet_list = list(self.wallets_set)
                 for i in range(0, len(wallet_list), WALLET_BATCH_SIZE):
                     batch = wallet_list[i:i + WALLET_BATCH_SIZE]
                     await self._process_wallet_batch(batch)
+                    # Batch arası kısa bekleme (rate limit koruması)
+                    await asyncio.sleep(0.5)
+
+                # Kredit tahmini: her batch = batch_size getSig + enhanced TX
+                num_batches = (len(wallet_list) + WALLET_BATCH_SIZE - 1) // WALLET_BATCH_SIZE
+                self.daily_credit_estimate += num_batches * (WALLET_BATCH_SIZE + 20)
 
                 # Checkpoint kaydet (her 10 cycle)
                 if self.stats["cycles"] % 10 == 0:
@@ -490,9 +515,11 @@ class SolSmartMoneyMonitor:
                 # İstatistik yazdır (her 20 cycle)
                 if self.stats["cycles"] % 20 == 0:
                     elapsed = time.time() - self.stats["start_time"]
+                    credit_pct = (self.daily_credit_estimate / self.DAILY_CREDIT_LIMIT * 100) if self.DAILY_CREDIT_LIMIT > 0 else 0
                     print(f"📊 Cycle {self.stats['cycles']} | "
                           f"{self.stats['swaps_found']} swap | "
                           f"{self.stats['alerts_sent']} alert | "
+                          f"Kredit: ~{self.daily_credit_estimate:,} ({credit_pct:.0f}%) | "
                           f"Uptime: {elapsed/3600:.1f}h")
 
                     # Daily report kontrolü
