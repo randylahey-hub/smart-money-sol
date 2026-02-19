@@ -527,17 +527,23 @@ class SolSmartMoneyMonitor:
                 break
             except Exception as e:
                 print(f"⚠️ Polling hatası: {e}")
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)
 
     async def _process_wallet_batch(self, wallets: list):
-        """Bir batch cüzdanı işle."""
+        """Bir batch cüzdanı işle. 429'da batch'i durdurur."""
         # Her cüzdanın son tx signature'larını al
         all_new_signatures = []
+        rate_limited = False
 
         for wallet in wallets:
             try:
                 until_sig = self.last_signatures.get(wallet)
                 sigs = get_signatures_for_address(wallet, limit=TX_FETCH_LIMIT, until=until_sig)
+
+                if sigs is None:
+                    # 429 veya ağır hata — batch'i durdur
+                    rate_limited = True
+                    break
 
                 if sigs:
                     # En yeni signature'ı checkpoint olarak kaydet
@@ -552,6 +558,11 @@ class SolSmartMoneyMonitor:
 
             except Exception as e:
                 print(f"⚠️ Signature fetch hatası ({wallet[:8]}...): {e}")
+
+        if rate_limited:
+            print(f"⏳ Batch rate limited — 5s bekleniyor...")
+            await asyncio.sleep(5)
+            return
 
         if not all_new_signatures:
             return

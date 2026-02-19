@@ -21,7 +21,7 @@ from config.settings import (
 
 # Rate limit tracking
 _last_request_time = 0
-_MIN_REQUEST_INTERVAL = 0.12  # ~8 req/sn (Helius free: 10 req/sn)
+_MIN_REQUEST_INTERVAL = 0.15  # ~6.6 req/sn (Helius free: 10 req/sn, güvenli margin)
 
 
 def _rate_limit():
@@ -35,25 +35,42 @@ def _rate_limit():
 
 
 def _rpc_call(method: str, params: list = None) -> dict:
-    """Solana JSON-RPC çağrısı."""
-    _rate_limit()
+    """Solana JSON-RPC çağrısı — 429'da exponential backoff ile retry."""
+    max_retries = 3
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": method,
         "params": params or []
     }
-    try:
-        resp = requests.post(SOLANA_RPC_HTTP, json=payload, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        if "error" in data:
-            print(f"⚠️ RPC Error ({method}): {data['error']}")
+    for attempt in range(max_retries):
+        _rate_limit()
+        try:
+            resp = requests.post(SOLANA_RPC_HTTP, json=payload, timeout=15)
+            if resp.status_code == 429:
+                wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                print(f"⏳ Rate limit (429) on {method}, {wait}s bekleniyor... (attempt {attempt+1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            if "error" in data:
+                print(f"⚠️ RPC Error ({method}): {data['error']}")
+                return None
+            return data.get("result")
+        except requests.exceptions.HTTPError as e:
+            if "429" in str(e):
+                wait = 2 ** (attempt + 1)
+                print(f"⏳ Rate limit (429) on {method}, {wait}s bekleniyor... (attempt {attempt+1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            print(f"⚠️ RPC HTTP Error ({method}): {e}")
             return None
-        return data.get("result")
-    except Exception as e:
-        print(f"⚠️ RPC Request Error ({method}): {e}")
-        return None
+        except Exception as e:
+            print(f"⚠️ RPC Request Error ({method}): {e}")
+            return None
+    print(f"❌ {method}: {max_retries} retry sonrası başarısız (429)")
+    return None
 
 
 def get_slot() -> int:
@@ -83,6 +100,8 @@ def get_signatures_for_address(address: str, limit: int = TX_FETCH_LIMIT,
         params[1]["until"] = until
 
     result = _rpc_call("getSignaturesForAddress", params)
+    if result is None:
+        return None  # 429 veya hata — None döndür (batch pausa tetikler)
     return result if result else []
 
 
@@ -102,6 +121,7 @@ def get_enhanced_transactions(signatures: list) -> list:
     """
     Helius Enhanced Transactions API — İnsan okunabilir parsed tx.
     Batch olarak birden fazla signature gönderebilir.
+    429'da exponential backoff ile retry yapar.
 
     Args:
         signatures: Transaction signature listesi (max 100)
@@ -112,15 +132,32 @@ def get_enhanced_transactions(signatures: list) -> list:
     if not signatures:
         return []
 
-    _rate_limit()
     url = f"{HELIUS_API_URL}/transactions?api-key={HELIUS_API_KEY}"
-    try:
-        resp = requests.post(url, json={"transactions": signatures[:100]}, timeout=20)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        print(f"⚠️ Helius Enhanced TX Error: {e}")
-        return []
+    max_retries = 3
+    for attempt in range(max_retries):
+        _rate_limit()
+        try:
+            resp = requests.post(url, json={"transactions": signatures[:100]}, timeout=20)
+            if resp.status_code == 429:
+                wait = 2 ** (attempt + 1)
+                print(f"⏳ Rate limit (429) on Enhanced TX, {wait}s bekleniyor... (attempt {attempt+1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.HTTPError as e:
+            if "429" in str(e):
+                wait = 2 ** (attempt + 1)
+                print(f"⏳ Rate limit (429) on Enhanced TX, {wait}s bekleniyor... (attempt {attempt+1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            print(f"⚠️ Helius Enhanced TX Error: {e}")
+            return []
+        except Exception as e:
+            print(f"⚠️ Helius Enhanced TX Error: {e}")
+            return []
+    print(f"❌ Enhanced TX: {max_retries} retry sonrası başarısız (429)")
+    return []
 
 
 def parse_token_swaps(enhanced_tx: dict) -> list:
