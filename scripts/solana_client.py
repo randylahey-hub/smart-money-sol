@@ -15,6 +15,10 @@ from config.settings import (
     SOLANA_RPC_HTTP,
     HELIUS_API_KEY,
     HELIUS_API_URL,
+    HELIUS_RPC_URL,
+    ALCHEMY_RPC_URL,
+    WEBHOOK_SECRET,
+    WEBHOOK_ID_FILE,
     DEX_PROGRAM_ID_SET,
     TX_FETCH_LIMIT,
 )
@@ -35,7 +39,7 @@ def _rate_limit():
 
 
 def _rpc_call(method: str, params: list = None) -> dict:
-    """Solana JSON-RPC çağrısı — 429'da exponential backoff ile retry."""
+    """Solana JSON-RPC çağrısı — Alchemy primary, Helius fallback. 429'da exponential backoff."""
     max_retries = 3
     payload = {
         "jsonrpc": "2.0",
@@ -43,33 +47,53 @@ def _rpc_call(method: str, params: list = None) -> dict:
         "method": method,
         "params": params or []
     }
-    for attempt in range(max_retries):
-        _rate_limit()
-        try:
-            resp = requests.post(SOLANA_RPC_HTTP, json=payload, timeout=15)
-            if resp.status_code == 429:
-                wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
-                print(f"⏳ Rate limit (429) on {method}, {wait}s bekleniyor... (attempt {attempt+1}/{max_retries})")
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            if "error" in data:
-                print(f"⚠️ RPC Error ({method}): {data['error']}")
-                return None
-            return data.get("result")
-        except requests.exceptions.HTTPError as e:
-            if "429" in str(e):
-                wait = 2 ** (attempt + 1)
-                print(f"⏳ Rate limit (429) on {method}, {wait}s bekleniyor... (attempt {attempt+1}/{max_retries})")
-                time.sleep(wait)
-                continue
-            print(f"⚠️ RPC HTTP Error ({method}): {e}")
-            return None
-        except Exception as e:
-            print(f"⚠️ RPC Request Error ({method}): {e}")
-            return None
-    print(f"❌ {method}: {max_retries} retry sonrası başarısız (429)")
+
+    # Primary → fallback sırası
+    endpoints = [SOLANA_RPC_HTTP]
+    if ALCHEMY_RPC_URL and SOLANA_RPC_HTTP != ALCHEMY_RPC_URL:
+        endpoints.append(ALCHEMY_RPC_URL)
+    if HELIUS_RPC_URL and HELIUS_RPC_URL not in endpoints:
+        endpoints.append(HELIUS_RPC_URL)
+
+    for endpoint in endpoints:
+        for attempt in range(max_retries):
+            _rate_limit()
+            try:
+                resp = requests.post(endpoint, json=payload, timeout=15)
+                if resp.status_code == 429:
+                    wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                    print(f"⏳ Rate limit (429) on {method}, {wait}s bekleniyor... (attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                if "error" in data:
+                    err = data["error"]
+                    # Kredit tükenmiş — fallback'e geç
+                    if isinstance(err, dict) and err.get("code") == -32429:
+                        print(f"⚠️ Kredit tükenmiş ({endpoint[:30]}...) — fallback deneniyor")
+                        break
+                    print(f"⚠️ RPC Error ({method}): {err}")
+                    return None
+                return data.get("result")
+            except requests.exceptions.HTTPError as e:
+                if "429" in str(e):
+                    wait = 2 ** (attempt + 1)
+                    print(f"⏳ Rate limit (429) on {method}, {wait}s bekleniyor... (attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                    continue
+                print(f"⚠️ RPC HTTP Error ({method}): {e}")
+                break  # Bu endpoint çalışmıyor, fallback dene
+            except Exception as e:
+                print(f"⚠️ RPC Request Error ({method}): {e}")
+                break  # Fallback dene
+        else:
+            # max_retries aşıldı, sonraki endpoint'e geç
+            continue
+        # break'ten geldiyse, sonraki endpoint'e geç
+        continue
+
+    print(f"❌ {method}: tüm endpoint'ler başarısız")
     return None
 
 
@@ -398,6 +422,108 @@ def get_multiple_signatures_batch(wallets: list, limit: int = TX_FETCH_LIMIT,
             valid_sigs = [s for s in sigs if s.get("err") is None]
             results[wallet] = valid_sigs
     return results
+
+
+# =============================================================================
+# HELIUS WEBHOOK YÖNETİMİ
+# =============================================================================
+
+def register_webhook(wallet_addresses: list, webhook_url: str, auth_token: str = "") -> dict:
+    """
+    Helius Enhanced Webhook kaydet.
+    Webhook, izlenen cüzdanlarda yeni TX olduğunda POST atar.
+
+    Returns:
+        {"webhookID": "...", ...} veya hata
+    """
+    url = f"{HELIUS_API_URL}/webhooks?api-key={HELIUS_API_KEY}"
+    payload = {
+        "webhookURL": webhook_url,
+        "transactionTypes": ["Any"],
+        "accountAddresses": wallet_addresses,
+        "webhookType": "enhanced",
+    }
+    if auth_token:
+        payload["authHeader"] = auth_token
+
+    try:
+        _rate_limit()
+        resp = requests.post(url, json=payload, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"⚠️ Webhook kayıt hatası: {e}")
+        return {}
+
+
+def update_webhook(webhook_id: str, wallet_addresses: list, webhook_url: str = None) -> bool:
+    """Mevcut webhook'u güncelle (wallet listesi veya URL)."""
+    url = f"{HELIUS_API_URL}/webhooks/{webhook_id}?api-key={HELIUS_API_KEY}"
+    payload = {
+        "accountAddresses": wallet_addresses,
+    }
+    if webhook_url:
+        payload["webhookURL"] = webhook_url
+
+    try:
+        _rate_limit()
+        resp = requests.put(url, json=payload, timeout=30)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"⚠️ Webhook güncelleme hatası: {e}")
+        return False
+
+
+def get_webhook_id() -> str:
+    """Kayıtlı webhook ID'yi dosyadan oku."""
+    try:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        filepath = os.path.join(base_dir, WEBHOOK_ID_FILE)
+        if os.path.exists(filepath):
+            with open(filepath, 'r') as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return ""
+
+
+def save_webhook_id(webhook_id: str):
+    """Webhook ID'yi dosyaya kaydet."""
+    try:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        filepath = os.path.join(base_dir, WEBHOOK_ID_FILE)
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'w') as f:
+            f.write(webhook_id)
+    except Exception as e:
+        print(f"⚠️ Webhook ID kayıt hatası: {e}")
+
+
+def list_webhooks() -> list:
+    """Helius'taki tüm webhook'ları listele."""
+    url = f"{HELIUS_API_URL}/webhooks?api-key={HELIUS_API_KEY}"
+    try:
+        _rate_limit()
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"⚠️ Webhook listeleme hatası: {e}")
+        return []
+
+
+def delete_webhook(webhook_id: str) -> bool:
+    """Webhook'u sil."""
+    url = f"{HELIUS_API_URL}/webhooks/{webhook_id}?api-key={HELIUS_API_KEY}"
+    try:
+        _rate_limit()
+        resp = requests.delete(url, timeout=15)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"⚠️ Webhook silme hatası: {e}")
+        return False
 
 
 # =============================================================================

@@ -18,8 +18,23 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-5107926571")
 # HELIUS RPC AYARLARI (Solana Mainnet)
 # =============================================================================
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "234d6c60-9839-4fe5-88db-d9419615de8e")
-SOLANA_RPC_HTTP = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 HELIUS_API_URL = f"https://api.helius.xyz/v0"
+
+# =============================================================================
+# ALCHEMY RPC (Primary — Helius kredit tasarrufu için)
+# =============================================================================
+ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "")
+ALCHEMY_RPC_URL = f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" if ALCHEMY_API_KEY else ""
+
+# Primary RPC: Alchemy varsa onu kullan (standart çağrılar), yoksa Helius
+SOLANA_RPC_HTTP = ALCHEMY_RPC_URL if ALCHEMY_API_KEY else HELIUS_RPC_URL
+
+# =============================================================================
+# WEBHOOK AYARLARI (Helius Enhanced Webhooks)
+# =============================================================================
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+WEBHOOK_ID_FILE = "data/webhook_id.txt"
 
 # =============================================================================
 # ALERT AYARLARI
@@ -128,9 +143,8 @@ MIN_APPEARANCES_FOR_REMOVAL = int(os.getenv("MIN_APPEARANCES_FOR_REMOVAL", "5"))
 LOG_FILE = "logs/monitor.log"
 CHECKPOINT_FILE = "data/checkpoints/last_signatures.json"
 
-# Polling interval (saniye)
-# Helius Free: 1M kredit/gün. 104 cüzdan × 20sn interval × 25 batch = ~970K/gün (güvenli)
-POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", "20"))
+# Polling interval (saniye) — Yedek polling için (webhook modda 300s)
+POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", "300"))
 
 # Batch size - Kaç cüzdanı paralel sorgula
 WALLET_BATCH_SIZE = int(os.getenv("WALLET_BATCH_SIZE", "25"))

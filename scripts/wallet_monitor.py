@@ -3,11 +3,11 @@ Solana Smart Money Wallet Monitor
 Solana chain üzerinde smart money cüzdanlarını real-time izler.
 3+ cüzdan 20 saniye içinde aynı tokeni alırsa alert gönderir.
 
-Monitoring yaklaşımı: Helius Enhanced Transactions API polling
-- Her POLLING_INTERVAL saniyede cüzdanların son tx'lerini kontrol et
-- Enhanced TX API ile swap'ları parse et
-- Filtre pipeline'dan geçir
-- Alert koşullarını kontrol et
+Monitoring yaklaşımı:
+- PRIMARY: Helius Enhanced Webhooks (event-driven, gerçek zamanlı)
+- BACKUP: Polling (her 300sn, kaçırılan TX'ler için)
+
+process_swap() → tx_classifier → filtre pipeline → alert
 """
 
 import asyncio

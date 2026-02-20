@@ -9,4 +9,6 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "scripts/wallet_monitor.py"]
+EXPOSE 8080
+
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "120", "--workers", "1", "--threads", "4", "scripts.webhook_server:app"]
