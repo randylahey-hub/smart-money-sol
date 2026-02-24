@@ -70,8 +70,8 @@ def init_monitor():
     return True
 
 
-def setup_webhook():
-    """Helius webhook'unu kaydet veya güncelle."""
+def setup_webhook(max_retries=3):
+    """Helius webhook'unu kaydet veya güncelle. 429 alırsa retry yapar."""
     if not monitor:
         return
 
@@ -79,8 +79,6 @@ def setup_webhook():
     # Koyeb public URL — env'den al
     public_url = os.getenv("KOYEB_PUBLIC_DOMAIN", "")
     if not public_url:
-        # Koyeb'de KOYEB_PUBLIC_DOMAIN otomatik set edilir
-        # Manual fallback
         service_name = os.getenv("KOYEB_SERVICE_NAME", "")
         app_name = os.getenv("KOYEB_APP_NAME", "")
         if service_name and app_name:
@@ -88,15 +86,31 @@ def setup_webhook():
 
     if not public_url:
         print("⚠️ Public URL bulunamadı — webhook kaydedilemedi")
-        print("   KOYEB_PUBLIC_DOMAIN env var'ını kontrol edin")
         return
 
     webhook_url = f"https://{public_url}/webhook"
     wallet_list = list(monitor.wallets_set)
 
-    # 1. Önce Helius'tan mevcut webhook'ları listele (ephemeral dosyaya güvenme)
     from scripts.solana_client import list_webhooks, update_webhook
-    existing_webhooks = list_webhooks()
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            return _do_webhook_setup(webhook_url, wallet_list, list_webhooks, update_webhook)
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries:
+                wait = 30 * attempt  # 30s, 60s, 90s
+                print(f"⏳ Webhook API rate limit, {wait}s bekleniyor... (deneme {attempt}/{max_retries})")
+                time.sleep(wait)
+            else:
+                print(f"⚠️ Webhook setup başarısız (deneme {attempt}): {e}")
+                if attempt == max_retries:
+                    print("⚠️ Mevcut webhook hâlâ aktif olabilir — webhook push'ları gelmeye devam edecek")
+
+
+def _do_webhook_setup(webhook_url, wallet_list, list_webhooks, update_webhook):
+    """Tek bir webhook setup denemesi. 429'da exception fırlatır."""
+    # 1. Helius'tan mevcut webhook'ları listele
+    existing_webhooks = list_webhooks()  # 429 olursa exception fırlatır
     for wh in existing_webhooks:
         if wh.get("webhookURL") == webhook_url:
             wh_id = wh["webhookID"]
@@ -106,13 +120,13 @@ def setup_webhook():
                 save_webhook_id(wh_id)
                 print(f"✅ Webhook güncellendi ({len(wallet_list)} cüzdan): {wh_id[:12]}...")
             else:
-                print(f"⚠️ Webhook güncelleme başarısız, devam ediliyor")
+                print(f"⚠️ Webhook güncelleme başarısız")
             return
 
     # 2. Dosyadan ID kontrol (fallback)
     existing_id = get_webhook_id()
     if existing_id:
-        print(f"🔄 Dosyadan webhook ID bulundu, güncelleniyor: {existing_id[:12]}...")
+        print(f"🔄 Dosyadan webhook ID bulundu: {existing_id[:12]}...")
         result = update_webhook(existing_id, wallet_list, webhook_url)
         if result:
             print(f"✅ Webhook güncellendi: {webhook_url}")
@@ -300,9 +314,9 @@ def _startup():
     print("=" * 60)
 
     if init_monitor():
-        # Webhook kaydet (10sn sonra — servise zaman tanı)
+        # Webhook kaydet (30sn sonra — önceki deploy'un rate limit'ini geçir)
         def delayed_webhook_setup():
-            time.sleep(10)
+            time.sleep(30)
             setup_webhook()
 
         webhook_thread = threading.Thread(target=delayed_webhook_setup, daemon=True)
