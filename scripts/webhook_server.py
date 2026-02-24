@@ -308,11 +308,13 @@ def _startup():
         webhook_thread = threading.Thread(target=delayed_webhook_setup, daemon=True)
         webhook_thread.start()
 
-        # Yedek polling thread (daemon — ana process kapanınca kapanır)
-        polling_thread = threading.Thread(target=_run_backup_polling, daemon=True)
-        polling_thread.start()
+        # Backup polling devre dışı — webhook zaten real-time push yapıyor.
+        # 250 cüzdan × getSignaturesForAddress = 72K çağrı/gün = 2.16M kredi/ay
+        # Free tier 1M → aşılıyordu. Webhook modu bu çağrıları sıfıra indiriyor.
+        # polling_thread = threading.Thread(target=_run_backup_polling, daemon=True)
+        # polling_thread.start()
 
-        # Periyodik görevler thread
+        # Periyodik görevler thread (stats, daily report, mcap checker)
         periodic_thread = threading.Thread(target=_run_periodic_tasks, daemon=True)
         periodic_thread.start()
 
@@ -321,8 +323,8 @@ def _startup():
         send_status_update(
             f"🟢 SOL Monitor (Webhook mode) başlatıldı!\n"
             f"• {wallet_count} cüzdan izleniyor\n"
-            f"• Mode: Helius Enhanced Webhooks\n"
-            f"• Yedek polling: {POLLING_INTERVAL}sn\n"
+            f"• Mode: Helius Enhanced Webhooks (pure)\n"
+            f"• Backup polling: KAPALI (kredi tasarrufu)\n"
             f"• SOL: ${monitor.sol_price:.2f}"
         )
 
