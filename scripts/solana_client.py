@@ -475,6 +475,18 @@ def update_webhook(webhook_id: str, wallet_addresses: list, webhook_url: str = N
         return False
 
 
+def list_webhooks() -> list:
+    """Helius API'deki tüm webhook'ları listele. Restart-safe webhook lookup için kullanılır."""
+    url = f"{HELIUS_API_URL}/webhooks?api-key={HELIUS_API_KEY}"
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        return resp.json()  # [{"webhookID": "...", "webhookURL": "...", ...}]
+    except Exception as e:
+        print(f"⚠️ Webhook listeleme hatası: {e}")
+        return []
+
+
 def get_webhook_id() -> str:
     """Kayıtlı webhook ID'yi dosyadan oku."""
     try:

@@ -94,17 +94,31 @@ def setup_webhook():
     webhook_url = f"https://{public_url}/webhook"
     wallet_list = list(monitor.wallets_set)
 
-    # Mevcut webhook var mı?
+    # 1. Önce Helius'tan mevcut webhook'ları listele (ephemeral dosyaya güvenme)
+    from scripts.solana_client import list_webhooks, update_webhook
+    existing_webhooks = list_webhooks()
+    for wh in existing_webhooks:
+        if wh.get("webhookURL") == webhook_url:
+            wh_id = wh["webhookID"]
+            print(f"🔎 Helius'ta mevcut webhook bulundu: {wh_id[:12]}...")
+            result = update_webhook(wh_id, wallet_list, webhook_url)
+            if result:
+                save_webhook_id(wh_id)
+                print(f"✅ Webhook güncellendi ({len(wallet_list)} cüzdan): {wh_id[:12]}...")
+            else:
+                print(f"⚠️ Webhook güncelleme başarısız, devam ediliyor")
+            return
+
+    # 2. Dosyadan ID kontrol (fallback)
     existing_id = get_webhook_id()
     if existing_id:
-        print(f"🔄 Mevcut webhook güncelleniyor: {existing_id[:12]}...")
-        from scripts.solana_client import update_webhook
+        print(f"🔄 Dosyadan webhook ID bulundu, güncelleniyor: {existing_id[:12]}...")
         result = update_webhook(existing_id, wallet_list, webhook_url)
         if result:
             print(f"✅ Webhook güncellendi: {webhook_url}")
             return
 
-    # Yeni webhook kaydet
+    # 3. Hiç webhook yok → yeni kayıt
     print(f"📡 Yeni webhook kaydediliyor: {webhook_url}")
     result = register_webhook(wallet_list, webhook_url, WEBHOOK_SECRET)
     if result and "webhookID" in result:
