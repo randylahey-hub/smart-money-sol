@@ -476,11 +476,16 @@ def update_webhook(webhook_id: str, wallet_addresses: list, webhook_url: str = N
 
 
 def list_webhooks() -> list:
-    """Helius API'deki tüm webhook'ları listele. 429'da exception fırlatır (retry üst katmanda)."""
+    """Helius API'deki tüm webhook'ları listele. Hata → [] (retry setup_webhook'ta)."""
     url = f"{HELIUS_API_URL}/webhooks?api-key={HELIUS_API_KEY}"
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()  # 429 → exception → setup_webhook retry yapar
-    return resp.json()  # [{"webhookID": "...", "webhookURL": "...", ...}]
+    try:
+        _rate_limit()
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"⚠️ Webhook listeleme: {e}")
+        return []
 
 
 def get_webhook_id() -> str:

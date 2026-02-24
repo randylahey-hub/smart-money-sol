@@ -71,12 +71,14 @@ def init_monitor():
 
 
 def setup_webhook(max_retries=3):
-    """Helius webhook'unu kaydet veya güncelle. 429 alırsa retry yapar."""
+    """
+    Helius webhook'unu kaydet veya güncelle.
+    429 alırsa 30/60/90sn backoff ile retry yapar.
+    Akış: Helius'ta listele → URL eşleşen varsa update → yoksa yeni kayıt.
+    """
     if not monitor:
         return
 
-    port = os.getenv("PORT", "8080")
-    # Koyeb public URL — env'den al
     public_url = os.getenv("KOYEB_PUBLIC_DOMAIN", "")
     if not public_url:
         service_name = os.getenv("KOYEB_SERVICE_NAME", "")
@@ -94,52 +96,44 @@ def setup_webhook(max_retries=3):
     from scripts.solana_client import list_webhooks, update_webhook
 
     for attempt in range(1, max_retries + 1):
-        try:
-            return _do_webhook_setup(webhook_url, wallet_list, list_webhooks, update_webhook)
-        except Exception as e:
-            if "429" in str(e) and attempt < max_retries:
-                wait = 30 * attempt  # 30s, 60s, 90s
-                print(f"⏳ Webhook API rate limit, {wait}s bekleniyor... (deneme {attempt}/{max_retries})")
-                time.sleep(wait)
-            else:
-                print(f"⚠️ Webhook setup başarısız (deneme {attempt}): {e}")
-                if attempt == max_retries:
-                    print("⚠️ Mevcut webhook hâlâ aktif olabilir — webhook push'ları gelmeye devam edecek")
+        # --- Adım 1: Helius'ta mevcut webhook'u ara ---
+        existing_webhooks = list_webhooks()  # [] dönerse 429 veya hata
+        for wh in existing_webhooks:
+            if wh.get("webhookURL") == webhook_url:
+                wh_id = wh["webhookID"]
+                print(f"🔎 Helius'ta mevcut webhook bulundu: {wh_id[:12]}...")
+                if update_webhook(wh_id, wallet_list, webhook_url):
+                    save_webhook_id(wh_id)
+                    print(f"✅ Webhook güncellendi ({len(wallet_list)} cüzdan)")
+                    return
+                # update başarısız ama webhook var — devam et
+                print(f"⚠️ Update başarısız ama webhook mevcut, push'lar gelmeye devam edecek")
+                return
 
+        # --- Adım 2: Dosyadan ID fallback ---
+        existing_id = get_webhook_id()
+        if existing_id:
+            print(f"🔄 Dosyadan webhook ID: {existing_id[:12]}...")
+            if update_webhook(existing_id, wallet_list, webhook_url):
+                print(f"✅ Webhook güncellendi: {webhook_url}")
+                return
 
-def _do_webhook_setup(webhook_url, wallet_list, list_webhooks, update_webhook):
-    """Tek bir webhook setup denemesi. 429'da exception fırlatır."""
-    # 1. Helius'tan mevcut webhook'ları listele
-    existing_webhooks = list_webhooks()  # 429 olursa exception fırlatır
-    for wh in existing_webhooks:
-        if wh.get("webhookURL") == webhook_url:
-            wh_id = wh["webhookID"]
-            print(f"🔎 Helius'ta mevcut webhook bulundu: {wh_id[:12]}...")
-            result = update_webhook(wh_id, wallet_list, webhook_url)
-            if result:
-                save_webhook_id(wh_id)
-                print(f"✅ Webhook güncellendi ({len(wallet_list)} cüzdan): {wh_id[:12]}...")
-            else:
-                print(f"⚠️ Webhook güncelleme başarısız")
+        # --- Adım 3: Yeni kayıt ---
+        print(f"📡 Yeni webhook kaydediliyor: {webhook_url}")
+        result = register_webhook(wallet_list, webhook_url, WEBHOOK_SECRET)
+        if result and "webhookID" in result:
+            save_webhook_id(result["webhookID"])
+            print(f"✅ Webhook registered: {result['webhookID'][:12]}...")
             return
 
-    # 2. Dosyadan ID kontrol (fallback)
-    existing_id = get_webhook_id()
-    if existing_id:
-        print(f"🔄 Dosyadan webhook ID bulundu: {existing_id[:12]}...")
-        result = update_webhook(existing_id, wallet_list, webhook_url)
-        if result:
-            print(f"✅ Webhook güncellendi: {webhook_url}")
-            return
-
-    # 3. Hiç webhook yok → yeni kayıt
-    print(f"📡 Yeni webhook kaydediliyor: {webhook_url}")
-    result = register_webhook(wallet_list, webhook_url, WEBHOOK_SECRET)
-    if result and "webhookID" in result:
-        save_webhook_id(result["webhookID"])
-        print(f"✅ Webhook registered: {result['webhookID'][:12]}...")
-    else:
-        print(f"⚠️ Webhook kayıt hatası: {result}")
+        # --- Hiçbiri çalışmadı — 429 veya geçici hata ---
+        if attempt < max_retries:
+            wait = 30 * attempt
+            print(f"⏳ Webhook setup başarısız — {wait}s bekleniyor (deneme {attempt}/{max_retries})")
+            time.sleep(wait)
+        else:
+            print(f"⚠️ Webhook setup {max_retries} denemede başarısız")
+            print(f"   Önceki webhook hâlâ aktif olabilir — push'lar gelmeye devam edecek")
 
 
 @app.route("/health", methods=["GET"])
